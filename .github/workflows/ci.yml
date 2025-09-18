@@ -10,63 +10,67 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:14
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: chat
-        ports: ["5432:5432"]
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd="pg_isready -U postgres"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=5
+          --health-retries=10
 
       redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
+        image: redis:7
+        ports:
+          - 6379:6379
         options: >-
           --health-cmd="redis-cli ping || exit 1"
-          --health-interval=5s
-          --health-timeout=3s
+          --health-interval=10s
+          --health-timeout=5s
           --health-retries=10
 
     env:
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONDONTWRITEBYTECODE: 1
 
-      # DB env read by your Django settings
+      # Postgres config (Django reads these in your settings)
       POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: "5432"
       POSTGRES_DB: chat
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
 
-      # IMPORTANT: point at the redis *service* hostname
-      REDIS_URL: redis://redis:6379/1
+      # Point Django at localhost Redis in CI
+      REDIS_URL: redis://127.0.0.1:6379/1
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev
-
-      - name: Install Python deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-django pytest-asyncio pytest-cov
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
-      - name: Wait for services
+      - name: Wait for Postgres & Redis
         env:
           PGPASSWORD: postgres
         run: |
+          # Wait for Postgres
           until pg_isready -h 127.0.0.1 -p 5432 -U postgres; do sleep 1; done
-          until redis-cli -h redis ping; do sleep 1; done
+
+          # Wait for Redis (bash TCP check, no redis-cli on runner)
+          until bash -c ">/dev/tcp/127.0.0.1/6379" 2>/dev/null; do sleep 1; done
 
       - name: Migrate
         run: python manage.py migrate --noinput
