@@ -37,12 +37,13 @@ jobs:
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONDONTWRITEBYTECODE: "1"
       # Tell Django (via settings_local) how to reach the CI Postgres service:
-      POSTGRES_HOST: postgres
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
       POSTGRES_DB: chat
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       # Redis in CI:
-      REDIS_URL: redis://redis:6379/1
+      REDIS_URL: redis://127.0.0.1:6379/1
 
     steps:
       - name: Checkout
