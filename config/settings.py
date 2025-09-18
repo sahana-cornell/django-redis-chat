@@ -151,3 +151,9 @@ LOGGING = {
     },
 }
 
+
+# Allow local overrides for CI/other envs
+try:
+    from .settings_local import *
+except Exception:
+    pass

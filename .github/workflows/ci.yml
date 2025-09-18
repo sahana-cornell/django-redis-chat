@@ -36,7 +36,12 @@ jobs:
     env:
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONDONTWRITEBYTECODE: "1"
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/chat
+      # Tell Django (via settings_local) how to reach the CI Postgres service:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: chat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Redis in CI:
       REDIS_URL: redis://redis:6379/1
 
     steps:
