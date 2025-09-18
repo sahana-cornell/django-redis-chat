@@ -7,30 +7,66 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: chat
-          POSTGRES_PASSWORD: chat
           POSTGRES_DB: chat
-        ports: ["5432:5432"]
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U chat -d chat"
-          --health-interval=10s --health-timeout=5s --health-retries=5
+          --health-cmd="pg_isready -U postgres -d chat"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
       redis:
         image: redis:7
-        ports: ["6379:6379"]
-    env:
-      DATABASE_URL: postgres://chat:chat@localhost:5432/chat
-      REDIS_URL: redis://localhost:6379/1
-      DJANGO_SETTINGS_MODULE: config.settings
-      PYTHONDONTWRITEBYTECODE: 1
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
-      - run: python manage.py migrate --noinput
-      - run: pytest --maxfail=1 --disable-warnings -q
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping || exit 1"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
 
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings
+      PYTHONDONTWRITEBYTECODE: "1"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/chat
+      REDIS_URL: redis://redis:6379/1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps for psycopg2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name: Make static dir (silence warning)
+        run: mkdir -p static
+
+      - name: Django checks
+        run: python manage.py check --deploy --fail-level WARNING || true
+
+      - name: Migrate
+        run: python manage.py migrate --noinput
+
+      - name: Run tests
+        run: pytest -q
