@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>WS Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1020; --panel:#121a33; --muted:#7e8bb6; --me:#3a85ff; --them:#232f57; --ok:#23c55e; --err:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:var(--bg); color:#e6ecff; }
+    header { padding:20px 22px; font-weight:700; font-size:26px; letter-spacing:.2px; }
+    .card { background:var(--panel); border:1px solid rgba(255,255,255,.07); border-radius:14px; margin:0 22px 22px; padding:16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    label { font-size:13px; color:var(--muted); margin-right:8px; }
+    input[type="text"] { flex:1 1 260px; background:#0e1630; color:#e6ecff; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px 12px; outline:none; }
+    input[type="text"]::placeholder { color:#98a3c7; }
+    button { background:#2452ff; border:0; color:white; padding:10px 14px; border-radius:10px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .status { font-size:13px; color:var(--muted); margin-top:10px; display:flex; align-items:center; gap:8px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#ff5d5d; }
+    .dot.ok { background:var(--ok); }
+
+    /* chat area */
+    .chat { display:flex; gap:16px; }
+    .pane { flex: 1 1 0; min-height: 380px; background:#0b132a; border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px; overflow:auto; }
+    .bubbles { flex: 0 0 360px; display:flex; flex-direction:column; gap:10px; background:#0b132a; border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px; max-height:460px; overflow:auto; }
+    .bubble { max-width:75%; padding:10px 12px; border-radius:14px; }
+    .me { background:var(--me); color:white; align-self:flex-end; border-top-right-radius:6px; }
+    .them { background:var(--them); color:#e6ecff; align-self:flex-start; border-top-left-radius:6px; }
+    .meta { font-size:12px; color:#a8b3da; margin-top:4px; }
+    .sys { font-size:14px; color:#ffcc80; font-style:italic; margin:6px 0; display:flex; align-items:center; gap:6px; }
+
+    .composer { display:flex; gap:10px; margin-top:10px; }
+    .composer input { flex: 1 1 auto; }
+
+    .status-line { margin: 6px 0; color: #ffcc80; font-size: 14px; font-style: italic; }
+  </style>
+</head>
+<body>
+  <header>WS Demo</header>
+
+  <section class="card">
+    <div class="row" style="gap:12px;">
+      <label>Conversation ID:</label>
+      <input id="convId" type="text" value="1" />
+      <label>JWT Token:</label>
+      <input id="jwt" type="text" placeholder="paste your access token" />
+      <button id="connectBtn">Connect</button>
+    </div>
+    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">disconnected</span></div>
+  </section>
+
+  <section class="card">
+    <div class="chat">
+      <div class="pane" id="log">connected</div>
+      <div class="bubbles" id="bubbles"></div>
+    </div>
+    <div class="composer">
+      <input id="msg" type="text" placeholder="type a message..." />
+      <button id="sendBtn">Send</button>
+    </div>
+  </section>
+
+<script>
+(function () {
+  // Elements
+  const logDiv = document.getElementById("log");
+  const bubbles = document.getElementById("bubbles");
+  const convInput = document.getElementById("convId");
+  const jwtInput = document.getElementById("jwt");
+  const connectBtn = document.getElementById("connectBtn");
+  const msgInput = document.getElementById("msg");
+  const sendBtn = document.getElementById("sendBtn");
+  const dot = document.getElementById("statusDot");
+  const stext = document.getElementById("statusText");
+
+  // State
+  let ws = null;
+  let cooldownTimer = null;
+  let cooldownUntil = 0;
+  let myUserId = null;
+
+  // --- JWT helpers ---
+  function parseJwt(t) {
+    try {
+      const base = t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+      const json = decodeURIComponent(atob(base).split('').map(c =>
+        '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+      ).join(''));
+      return JSON.parse(json);
+    } catch { return null; }
+  }
+
+  function refreshMyUserIdFromToken() {
+    const raw = (jwtInput.value || "").trim();
+    const payload = raw ? parseJwt(raw) : null;
+    myUserId = payload && typeof payload.user_id !== "undefined" ? payload.user_id : null;
+    // Optional: reflect in the status line
+    if (myUserId) {
+      stext.textContent = `disconnected (you are user ${myUserId})`;
+    } else {
+      stext.textContent = "disconnected";
+    }
+  }
+
+  // Utility log pane
+  function log(s) {
+    const div = document.createElement("div");
+    div.textContent = s;
+    logDiv.appendChild(div);
+    logDiv.scrollTop = logDiv.scrollHeight;
+  }
+
+  // Pretty system note (used for rate limit message inside bubbles pane)
+  function addSystemNote(text) {
+    const note = document.createElement("div");
+    note.className = "sys";
+    note.innerHTML = `⚠️ ${text}`;
+    bubbles.appendChild(note);
+    bubbles.scrollTop = bubbles.scrollHeight;
+  }
+
+// --- Timestamp helpers (robust across formats) ---
+function toDate(ts) {
+  if (ts == null) return new Date();
+  if (typeof ts === "number") {
+    // seconds vs ms
+    return new Date(ts < 1e12 ? ts * 1000 : ts);
+  }
+  if (typeof ts === "string") {
+    // ISO string or numeric string
+    const n = Number(ts);
+    if (!Number.isNaN(n)) return new Date(n < 1e12 ? n * 1000 : n);
+    const d = new Date(ts);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return new Date();
+}
+
+// Prefer explicit fields; else derive from stream-style ids like "1726440234123-0"
+function guessDateFromMessage(m) {
+  if (!m) return new Date();
+  for (const f of ["ts", "timestamp", "created_at", "sent_at"]) {
+    if (m[f] != null) return toDate(m[f]);
+  }
+  for (const f of ["id", "message_id", "stream_id", "redis_id"]) {
+    const v = m[f];
+    if (typeof v === "string") {
+      const head = v.split("-")[0];
+      if (/^\d+$/.test(head)) {
+        const ms = parseInt(head, 10);
+        return new Date(ms < 1e12 ? ms * 1000 : ms);
+      }
+    }
+  }
+  return new Date();
+}
+
+
+  // Pretty chat bubble
+  function addMessage(m, isMe) {
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.alignItems = isMe ? "flex-end" : "flex-start";
+
+    const b = document.createElement("div");
+    b.className = "bubble " + (isMe ? "me" : "them");
+    b.textContent = m.text || "";
+    wrap.appendChild(b);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const dt = guessDateFromMessage(m);
+meta.textContent = (isMe ? "you" : ("user " + (m.user_id ?? "?"))) + " • " + dt.toLocaleTimeString();
+
+
+    wrap.appendChild(meta);
+
+    bubbles.appendChild(wrap);
+    bubbles.scrollTop = bubbles.scrollHeight;
+  }
+
+  // Cooldown handling
+  function startCooldown(seconds, message) {
+    const ms = Math.max(0, Math.ceil(seconds) * 1000);
+    cooldownUntil = Date.now() + ms;
+    setSendEnabled(false);
+    addSystemNote(message);
+    if (cooldownTimer) { clearInterval(cooldownTimer); }
+    updateSendButtonLabel();
+    cooldownTimer = setInterval(() => {
+      if (Date.now() >= cooldownUntil) {
+        clearInterval(cooldownTimer);
+        cooldownTimer = null;
+        setSendEnabled(true);
+        sendBtn.textContent = "Send";
+        return;
+      }
+      updateSendButtonLabel();
+    }, 250);
+  }
+
+  function updateSendButtonLabel() {
+    const remainMs = Math.max(0, cooldownUntil - Date.now());
+    const remain = Math.ceil(remainMs / 1000);
+    sendBtn.textContent = `Send (${remain}s)`;
+  }
+
+  function setSendEnabled(enabled) {
+    sendBtn.disabled = !enabled;
+    msgInput.disabled = !enabled;
+  }
+
+  function setStatus(ok, text) {
+    dot.classList.toggle("ok", !!ok);
+    stext.textContent = text || (ok ? "connected" : "disconnected");
+  }
+
+  // Connect WS
+  function connectWs() {
+    if (ws) {
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+    const convId = (convInput.value || "").trim();
+    const token = (jwtInput.value || "").trim();
+    if (!convId || !token) {
+      log("Missing convId or JWT");
+      return;
+    }
+
+    // make sure myUserId matches the current token before connecting
+    refreshMyUserIdFromToken();
+
+    const url = `ws://${location.host}/ws/chat/${encodeURIComponent(convId)}/?token=${encodeURIComponent(token)}`;
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      setStatus(true, myUserId ? `connected (you are user ${myUserId})` : "connected");
+      log("connected");
+    };
+
+    ws.onclose = (e) => {
+      setStatus(false, myUserId ? `disconnected (you are user ${myUserId})` : "disconnected");
+      log(`closed: ${e.code}`);
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+
+        if (data.type === "history") {
+          (data.messages || []).forEach(m => addMessage(m, m.user_id === myUserId));
+        } else if (data.type === "message") {
+          const m = data.message || {};
+          addMessage(m, m.user_id === myUserId);
+        } else if (data.type === "rate_limited") {
+          startCooldown(data.retry_after ?? 1, data.message || "Too many messages. Please wait.");
+          const note = document.createElement("div");
+          note.className = "status-line";
+          note.textContent = data.message || "Rate limited.";
+          logDiv.appendChild(note);
+          logDiv.scrollTop = logDiv.scrollHeight;
+        } else {
+          log("recv: " + e.data);
+        }
+      } catch {
+        log("recv: " + e.data);
+      }
+    };
+  }
+
+  // Send message helper
+  function sendCurrent() {
+    if (!ws || ws.readyState !== 1) return;
+    if (sendBtn.disabled) return; // respect cooldown
+    const text = msgInput.value.trim();
+    if (!text) return;
+    ws.send(JSON.stringify({ text }));
+    msgInput.value = "";
+  }
+
+  // Hook up controls
+  connectBtn.addEventListener("click", connectWs);
+  sendBtn.addEventListener("click", sendCurrent);
+  msgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendCurrent();
+    }
+  });
+
+  // Persist token locally (optional)
+  try {
+    const saved = localStorage.getItem("demo_jwt");
+    if (saved) jwtInput.value = saved;
+    jwtInput.addEventListener("change", () => {
+      localStorage.setItem("demo_jwt", jwtInput.value);
+    });
+  } catch {}
+
+  // keep myUserId updated from the JWT
+  jwtInput.addEventListener("input", refreshMyUserIdFromToken);
+  jwtInput.addEventListener("change", refreshMyUserIdFromToken);
+  refreshMyUserIdFromToken();  // run once at startup
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+pytest
+pytest-django
+pytest-asyncio
+pytest-cov
+requests
+daphne>=4,<5
