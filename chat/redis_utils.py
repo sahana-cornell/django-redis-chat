@@ -14,7 +14,7 @@ def get_redis() -> redis.Redis:
     if _redis is None:
         host = os.environ.get("REDIS_HOST", "redis")
         port = int(os.environ.get("REDIS_PORT", "6379"))
-        _redis = redis.Redis(host=host, port=port, db=0, decode_responses=True)
+        _redis = redis.from_url(os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/1"))
     return _redis
 
 # --- Message storage helpers ---
